@@ -59,7 +59,7 @@ def search_players(query_text: str, limit: int = 20) -> (list, float):
             return [], 0.0
 
         placeholders = ','.join('?' for _ in matched_rowids)
-        players_query = f"SELECT * FROM players WHERE rowid IN ({placeholders})"
+        players_query = f"SELECT rowid, * FROM players WHERE rowid IN ({placeholders})"
         
         full_results_unordered = cursor.execute(players_query, matched_rowids).fetchall()
         # Create a mapping to re-sort results based on VSS distance

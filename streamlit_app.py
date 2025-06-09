@@ -40,9 +40,19 @@ def search_players(query_text: str, limit: int = 20) -> (list, float):
     
     cursor = conn.cursor()
 
-    vss_query = "SELECT rowid, distance FROM vss_players WHERE vss_search(player_embedding, ?) ORDER BY distance LIMIT ?"
+    # This is the backwards-compatible VSS query for older SQLite versions
+    vss_query = """
+        SELECT rowid, distance
+        FROM vss_players
+        WHERE vss_search(
+            player_embedding,
+            vss_search_params(?, ?) 
+        )
+    """
     try:
+        # Note the new parameters: we pass the vector and the limit INSIDE the query params
         results = cursor.execute(vss_query, (query_vector_json, limit)).fetchall()
+        # The returned results are already limited and sorted by distance, so we don't need ORDER BY or LIMIT
         matched_rowids = [row['rowid'] for row in results]
         
         if not matched_rowids:

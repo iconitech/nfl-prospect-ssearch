@@ -118,10 +118,10 @@ def search_players_hybrid(semantic_query: str, filters: dict, limit: int = 20) -
     return final_players, search_duration
 
 # --- Streamlit UI (No changes needed here) ---
-st.set_page_config(page_title="NFL Prospect Hybrid Search", page_icon="🏈", layout="wide")
-st.title("🏈 NFL Prospect Hybrid Search v2")
+st.set_page_config(page_title="NFL Prospect Hub", page_icon="🏈", layout="wide")
+st.title("🏈 NFL Prospect Hub v1.1")
 st.markdown("Use `semantic query [filter:value]`. Ex: `shutdown corner [round:1]`, `fast LB [team:buccaneers]`, `accurate qb [school_name:alabama]`")
-query = st.text_input("Search for a prospect", placeholder="e.g., 'generational talent'")
+query = st.text_input("Search for a prospect", placeholder="e.g., 'big-armed qb with accuracy issues'")
 if query:
     semantic_part, filters = parse_hybrid_query(query)
     if not semantic_part:

@@ -5,136 +5,158 @@ from sentence_transformers import SentenceTransformer
 import time
 import pandas as pd
 import sqlite_vss
+import re
 
-# --- Configuration ---
+# --- Configuration & Caching (Same as before) ---
 DATABASE_PATH = 'prospects.db'
-MODEL_NAME = 'all-MiniLM-L6-v2'
-
-# --- Caching ---
-# Caching is Streamlit's superpower. It prevents re-loading the model and
-# re-running searches for the same query, making the app feel instantaneous.
+# IMPORTANT: The model name here is only for the app to know what's in the DB.
+# The actual embedding generation happens in the prep script.
+MODEL_NAME = 'all-mpnet-base-v2' 
 
 @st.cache_resource
 def load_model():
-    """Loads the SentenceTransformer model and caches it."""
+    # This now loads the larger, better model
     return SentenceTransformer(MODEL_NAME)
 
+# --- Query Parsing (Same as before) ---
 @st.cache_data
-def search_players(query_text: str, limit: int = 20) -> (list, float):
-    """
-    Performs semantic search on the database.
-    This function is cached so if the same query is entered again,
-    the result is returned instantly without hitting the database.
-    """
-    start_time = time.time()
-    model = load_model() # Retrieve the cached model
-    query_vector_json = json.dumps(model.encode(query_text).tolist())
+def parse_hybrid_query(query: str):
+    filter_pattern = r'\[(.*?):(.*?)\]'
+    filters = re.findall(filter_pattern, query)
+    semantic_query = re.sub(filter_pattern, '', query).strip()
+    filter_dict = {key.strip().lower(): value.strip() for key, value in filters} # Use lowercase keys
+    return semantic_query, filter_dict
 
+# --- THE UPGRADED HYBRID SEARCH FUNCTION ---
+@st.cache_data
+def search_players_hybrid(semantic_query: str, filters: dict, limit: int = 20) -> (list, float):
+    start_time = time.time()
+    model = load_model()
+    
     conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.enable_load_extension(True)
-    
-    # This is the platform-agnostic way to load the VSS extension.
-    # It's much more robust for deployment than hardcoding the file path.
     sqlite_vss.load(conn)
-    
     cursor = conn.cursor()
 
-    # This is the backwards-compatible VSS query for older SQLite versions
-    vss_query = """
-        SELECT rowid, distance
-        FROM vss_players
-        WHERE vss_search(
-            player_embedding,
-            vss_search_params(?, ?) 
-        )
-    """
-    try:
-        # Note the new parameters: we pass the vector and the limit INSIDE the query params
-        results = cursor.execute(vss_query, (query_vector_json, limit)).fetchall()
-        # The returned results are already limited and sorted by distance, so we don't need ORDER BY or LIMIT
-        matched_rowids = [row['rowid'] for row in results]
-        
-        if not matched_rowids:
-            return [], 0.0
+    candidate_rowids = None
 
-        placeholders = ','.join('?' for _ in matched_rowids)
-        players_query = f"SELECT rowid, * FROM players WHERE rowid IN ({placeholders})"
-        
-        full_results_unordered = cursor.execute(players_query, matched_rowids).fetchall()
-        # Create a mapping to re-sort results based on VSS distance
-        results_map = {dict(row)['rowid']: dict(row) for row in full_results_unordered}
-        full_results = [results_map[rowid] for rowid in matched_rowids if rowid in results_map]
+    # Stage 1: Structured Filters (Same as before)
+    if filters:
+        # NOTE: Ensure your filter keys are lowercase in the dictionary now
+        where_clauses = [f"LOWER({key}) LIKE ?" for key in filters.keys()]
+        params = [f"%{value}%" for value in filters.values()]
+        filter_query = f"SELECT rowid FROM players WHERE {' AND '.join(where_clauses)}"
+        try:
+            candidate_results = cursor.execute(filter_query, params).fetchall()
+            candidate_rowids = {row['rowid'] for row in candidate_results}
+            if not candidate_rowids:
+                conn.close()
+                return [], time.time() - start_time
+        except sqlite3.OperationalError:
+            st.error(f"Filter Error: One of your filter keys is not a valid column.")
+            conn.close()
+            return [], time.time() - start_time
 
-    finally:
-        conn.close()
+    # Stage 2: Semantic Search (Get a larger pool of 100 candidates)
+    query_vector_json = json.dumps(model.encode(semantic_query).tolist())
+    vss_query = "SELECT rowid, distance FROM vss_players WHERE vss_search(player_embedding, vss_search_params(?, 100))"
+    vss_results_raw = cursor.execute(vss_query, (query_vector_json,)).fetchall()
     
-    search_duration = time.time() - start_time
-    return full_results, search_duration
-
-# --- Streamlit User Interface ---
-
-# Page Configuration (set this as the first st command)
-st.set_page_config(
-    page_title="NFL Prospect Semantic Search",
-    page_icon="🏈",
-    layout="wide"
-)
-
-st.title("🏈 NFL Prospect Semantic Search")
-
-# Search Bar
-query = st.text_input(
-    "Search for a prospect's scouting report",
-    placeholder="e.g., 'big-armed QB with accuracy issues'",
-    help="Describe the type of player you're looking for."
-)
-
-# Perform search when query is entered
-if query:
-    results, duration = search_players(query)
+    # Create a dictionary of {rowid: distance} for easy lookup
+    vss_results_map = {row['rowid']: row['distance'] for row in vss_results_raw}
     
-    st.info(f"Found {len(results)} results in {duration:.2f} seconds.")
-    
-    if not results:
-        st.warning("No matching players found.")
+    # Intersect VSS results with structured candidates
+    if candidate_rowids is not None:
+        intersected_ids = candidate_rowids.intersection(vss_results_map.keys())
     else:
-        # Display results in columns for a cleaner look
-        for i in range(0, len(results), 2):
-            col1, col2 = st.columns(2)
-            
-            # --- Player in Column 1 ---
-            with col1:
-                player = results[i]
-                with st.container(border=True):
-                    name_text = f"**{player.get('player_name', 'N/A')}** ({player.get('position', 'N/A')})"
-                    
-                    draft_text = "Undrafted or Future Prospect"
-                    if not pd.isna(player.get('round')):
-                        draft_text = f"Drafted: R{int(player.get('round'))} P{int(player.get('overall'))} by {player.get('team', 'N/A')}"
-                    
-                    st.markdown(f"{name_text} | {draft_text}")
-                    st.caption(f"School: {player.get('school_name', 'N/A')}")
-                    
-                    with st.expander("Show Scouting Analysis"):
-                        st.write(player.get('analysis_text', 'No analysis available.'))
-            
-            # --- Player in Column 2 (if exists) ---
-            if i + 1 < len(results):
-                with col2:
-                    player = results[i+1]
-                    with st.container(border=True):
-                        name_text = f"**{player.get('player_name', 'N/A')}** ({player.get('position', 'N/A')})"
-                    
-                        draft_text = "Undrafted or Future Prospect"
-                        if not pd.isna(player.get('round')):
-                            draft_text = f"Drafted: R{int(player.get('round'))} P{int(player.get('overall'))} by {player.get('team', 'N/A')}"
-                        
-                        st.markdown(f"{name_text} | {draft_text}")
-                        st.caption(f"School: {player.get('school_name', 'N/A')}")
-                        
-                        with st.expander("Show Scouting Analysis"):
-                            st.write(player.get('analysis_text', 'No analysis available.'))
+        intersected_ids = vss_results_map.keys()
+        
+    if not intersected_ids:
+        conn.close()
+        return [], time.time() - start_time
 
+    # Retrieve full data for the candidate players
+    placeholders = ','.join('?' for _ in intersected_ids)
+    players_query = f"SELECT rowid, * FROM players WHERE rowid IN ({placeholders})"
+    full_player_data = cursor.execute(players_query, list(intersected_ids)).fetchall()
+    conn.close()
+
+    # --- Step 3: HYBRID RERANKING LOGIC ---
+    reranked_results = []
+    for player_row in full_player_data:
+        player = dict(player_row) # Convert to a standard dictionary
+        rowid = player['rowid']
+        
+        # Calculate Semantic Score (higher is better)
+        # We invert the distance and add 1 to avoid division by zero
+        semantic_score = 1.0 / (1.0 + vss_results_map[rowid])
+
+        # Calculate Draft Score (higher is better)
+        overall_pick = player.get('overall')
+        if pd.isna(overall_pick):
+            draft_score = 1.0 / 500.0 # Penalize undrafted players heavily
+        else:
+            draft_score = 1.0 / (1.0 + overall_pick)
+
+        # Define weights (TUNE THESE to change behavior)
+        # We give more weight to draft position to solve the "generational talent" problem
+        w_semantic = 0.4 
+        w_draft = 0.6
+        
+        hybrid_score = (w_semantic * semantic_score) + (w_draft * draft_score)
+        
+        reranked_results.append({'player': player, 'score': hybrid_score})
+
+    # Sort the final list by the new hybrid score, highest first
+    final_sorted_list = sorted(reranked_results, key=lambda x: x['score'], reverse=True)
+    
+    # Return only the top 'limit' players from the reranked list
+    final_players = [item['player'] for item in final_sorted_list][:limit]
+
+    search_duration = time.time() - start_time
+    return final_players, search_duration
+
+# --- Streamlit UI (No changes needed here) ---
+st.set_page_config(page_title="NFL Prospect Hybrid Search", page_icon="🏈", layout="wide")
+st.title("🏈 NFL Prospect Hybrid Search v2")
+st.markdown("Use `semantic query [filter:value]`. Ex: `shutdown corner [round:1]`, `fast LB [team:buccaneers]`, `accurate qb [school_name:alabama]`")
+query = st.text_input("Search for a prospect", placeholder="e.g., 'generational talent'")
+if query:
+    semantic_part, filters = parse_hybrid_query(query)
+    if not semantic_part:
+        st.warning("Please provide some text for the semantic search part of your query.")
+    else:
+        results, duration = search_players_hybrid(semantic_part, filters)
+        st.info(f"Found {len(results)} results in {duration:.2f} seconds.")
+        if not results:
+            st.warning("No matching players found.")
+        else:
+            for i in range(0, len(results), 2):
+                col1, col2 = st.columns(2)
+                if i < len(results):
+                    with col1:
+                        player = results[i]
+                        with st.container(border=True):
+                            name_text = f"**{player.get('player_name', 'N/A')}** ({player.get('position', 'N/A')})"
+                            draft_text = "Undrafted/Future"
+                            if not pd.isna(player.get('round')):
+                                draft_text = f"Drafted: R{int(player.get('round'))} P{int(player.get('overall'))} by {player.get('team', 'N/A')}"
+                            st.markdown(f"{name_text} | {draft_text}")
+                            st.caption(f"School: {player.get('school_name', 'N/A')}")
+                            with st.expander("Show Scouting Analysis"):
+                                st.write(player.get('analysis_text', 'No analysis available.'))
+                if i + 1 < len(results):
+                    with col2:
+                        player = results[i+1]
+                        with st.container(border=True):
+                            name_text = f"**{player.get('player_name', 'N/A')}** ({player.get('position', 'N/A')})"
+                            draft_text = "Undrafted/Future"
+                            if not pd.isna(player.get('round')):
+                                draft_text = f"Drafted: R{int(player.get('round'))} P{int(player.get('overall'))} by {player.get('team', 'N/A')}"
+                            st.markdown(f"{name_text} | {draft_text}")
+                            st.caption(f"School: {player.get('school_name', 'N/A')}")
+                            with st.expander("Show Scouting Analysis"):
+                                st.write(player.get('analysis_text', 'No analysis available.'))
 else:
-    st.info("Enter a search query above to see results.")
+    st.info("Enter a query above to start your search.")

@@ -95,7 +95,7 @@ def search_players_hybrid(semantic_query: str, filters: dict, limit: int = 20) -
         # Calculate Draft Score (higher is better)
         overall_pick = player.get('overall')
         if pd.isna(overall_pick):
-            draft_score = 1.0 / 500.0 # Penalize undrafted players heavily
+            draft_score = 1.0 / 500.0 # Penalize any undrafted players heavily
         else:
             draft_score = 1.0 / (1.0 + overall_pick)
 

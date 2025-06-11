@@ -117,46 +117,55 @@ def search_players_hybrid(semantic_query: str, filters: dict, limit: int = 20) -
     search_duration = time.time() - start_time
     return final_players, search_duration
 
-# --- Streamlit UI (No changes needed here) ---
-st.set_page_config(page_title="NFL Prospect Hub", page_icon="🏈", layout="wide")
-st.title("🏈 NFL Prospect Hub v1.1")
-st.markdown("Use `semantic query [filter:value]`. Ex: `shutdown corner [round:1]`, `fast LB [team:buccaneers]`, `accurate qb [school_name:alabama]`")
-query = st.text_input("Search for a prospect", placeholder="e.g., 'big-armed qb with accuracy issues'")
+# --- Streamlit User Interface (API-First Version) ---
+st.set_page_config(page_title="NFL Draft Prospect Hub v1.2", page_icon="🏈", layout="wide")
+st.title("🏈 NFL Draft Prospect Semantic Search")
+st.markdown("Search from 2014-2025 using semantic queries and structured filters like `[position:QB]` or `[school_name:Alabama]`")
+query = st.text_input("Search for a prospect", placeholder="e.g., 'elusive running back with good vision'")
+
 if query:
     semantic_part, filters = parse_hybrid_query(query)
     if not semantic_part:
-        st.warning("Please provide some text for the semantic search part of your query.")
+        st.warning("Please provide a text query.")
     else:
         results, duration = search_players_hybrid(semantic_part, filters)
         st.info(f"Found {len(results)} results in {duration:.2f} seconds.")
         if not results:
             st.warning("No matching players found.")
         else:
+            # Helper function to render a player card
+            def render_player_card(player_data):
+                with st.container(border=True):
+                    # Top line: Name, Position, Year
+                    name_text = f"**{player_data.get('player_name', 'N/A')}**"
+                    pos_text = f"({player_data.get('position', 'N/A')})"
+                    year_text = f"{int(player_data.get('year', ''))}" if pd.notna(player_data.get('year')) else ""
+                    st.markdown(f"{name_text} {pos_text} - {year_text}")
+                    
+                    # Second line: School and Grade
+                    grade = player_data.get('grade')
+                    grade_text = f"Grade: **{grade:.2f}**" if pd.notna(grade) else ""
+                    school_text = f"School: {player_data.get('school_name', 'N/A')}"
+                    st.caption(f"{school_text} | {grade_text}")
+                    
+                    # Third line: Draft Status from the API
+                    projection_text = player_data.get('draft_projection')
+                    if pd.notna(projection_text):
+                        st.markdown(f"**Projection:** {projection_text}")
+
+                    # Expander for analysis
+                    with st.expander("Show Scouting Analysis"):
+                        # We use the raw 'analysis_text' for display now
+                        st.write(player_data.get('analysis_text', 'No analysis available.'))
+
+            # Render cards in columns
             for i in range(0, len(results), 2):
                 col1, col2 = st.columns(2)
                 if i < len(results):
                     with col1:
-                        player = results[i]
-                        with st.container(border=True):
-                            name_text = f"**{player.get('player_name', 'N/A')}** ({player.get('position', 'N/A')})"
-                            draft_text = "Undrafted/Future"
-                            if not pd.isna(player.get('round')):
-                                draft_text = f"Drafted: R{int(player.get('round'))} P{int(player.get('overall'))} by {player.get('team', 'N/A')}"
-                            st.markdown(f"{name_text} | {draft_text}")
-                            st.caption(f"School: {player.get('school_name', 'N/A')}")
-                            with st.expander("Show Scouting Analysis"):
-                                st.write(player.get('analysis_text', 'No analysis available.'))
+                        render_player_card(results[i])
                 if i + 1 < len(results):
                     with col2:
-                        player = results[i+1]
-                        with st.container(border=True):
-                            name_text = f"**{player.get('player_name', 'N/A')}** ({player.get('position', 'N/A')})"
-                            draft_text = "Undrafted/Future"
-                            if not pd.isna(player.get('round')):
-                                draft_text = f"Drafted: R{int(player.get('round'))} P{int(player.get('overall'))} by {player.get('team', 'N/A')}"
-                            st.markdown(f"{name_text} | {draft_text}")
-                            st.caption(f"School: {player.get('school_name', 'N/A')}")
-                            with st.expander("Show Scouting Analysis"):
-                                st.write(player.get('analysis_text', 'No analysis available.'))
+                        render_player_card(results[i+1])
 else:
     st.info("Enter a query above to start your search.")

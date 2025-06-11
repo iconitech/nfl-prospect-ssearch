@@ -117,9 +117,9 @@ def search_players_hybrid(semantic_query: str, filters: dict, limit: int = 20) -
     search_duration = time.time() - start_time
     return final_players, search_duration
 
-# --- Streamlit User Interface (API-First Version) ---
-st.set_page_config(page_title="NFL Draft Prospect Hub v1.2", page_icon="🏈", layout="wide")
-st.title("🏈 NFL Draft Prospect Semantic Search")
+# --- Streamlit User Interface (Definitive Final Version) ---
+st.set_page_config(page_title="NFL Prospect Search (API-Powered)", page_icon="🏈", layout="wide")
+st.title("🏈 NFL Prospect Search (API-Powered)")
 st.markdown("Search from 2014-2025 using semantic queries and structured filters like `[position:QB]` or `[school_name:Alabama]`")
 query = st.text_input("Search for a prospect", placeholder="e.g., 'elusive running back with good vision'")
 
@@ -133,29 +133,31 @@ if query:
         if not results:
             st.warning("No matching players found.")
         else:
-            # Helper function to render a player card
+            # Helper function to render a player card correctly
             def render_player_card(player_data):
                 with st.container(border=True):
-                    # Top line: Name, Position, Year
+                    # --- Line 1: Name, Position, and Year ---
+                    # Use the 'year' field from the API. This fixes the "Undrafted/Future" bug.
                     name_text = f"**{player_data.get('player_name', 'N/A')}**"
                     pos_text = f"({player_data.get('position', 'N/A')})"
-                    year_text = f"{int(player_data.get('year', ''))}" if pd.notna(player_data.get('year')) else ""
-                    st.markdown(f"{name_text} {pos_text} - {year_text}")
+                    year_text = f"Prospect Year: **{int(player_data.get('year', ''))}**" if pd.notna(player_data.get('year')) else ""
+                    st.markdown(f"{name_text} {pos_text} | {year_text}")
                     
-                    # Second line: School and Grade
+                    # --- Line 2: School and Grade ---
+                    # Add the 'grade' field as requested.
                     grade = player_data.get('grade')
                     grade_text = f"Grade: **{grade:.2f}**" if pd.notna(grade) else ""
                     school_text = f"School: {player_data.get('school_name', 'N/A')}"
                     st.caption(f"{school_text} | {grade_text}")
                     
-                    # Third line: Draft Status from the API
+                    # --- Line 3: Draft Projection ---
+                    # Add the 'draft_projection' field as requested.
                     projection_text = player_data.get('draft_projection')
                     if pd.notna(projection_text):
                         st.markdown(f"**Projection:** {projection_text}")
 
                     # Expander for analysis
-                    with st.expander("Show Scouting Analysis"):
-                        # We use the raw 'analysis_text' for display now
+                    with st.expander("Show Scouting Analysis (Strengths & Weaknesses)"):
                         st.write(player_data.get('analysis_text', 'No analysis available.'))
 
             # Render cards in columns

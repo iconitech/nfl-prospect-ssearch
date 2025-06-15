@@ -11,7 +11,7 @@ import re
 DATABASE_PATH = 'prospects.db'
 # IMPORTANT: The model name here is only for the app to know what's in the DB.
 # The actual embedding generation happens in the prep script.
-MODEL_NAME = 'all-mpnet-base-v2' 
+MODEL_NAME = 'iconitech/nfl-scouting-expert-v1' 
 
 @st.cache_resource
 def load_model():
